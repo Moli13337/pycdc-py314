@@ -3,27 +3,27 @@
 #include "data.h"
 
 /* == Marshal structure for Code object ==
-                1.0     1.3     1.5     2.1     2.3     3.0     3.8     3.11
-argcount                short   short   short   long    long    long    long
-posonlyargc                                                     long    long
-kwonlyargc                                              long    long    long
+                1.0     1.3     1.5     2.1     2.3     3.0     3.8     3.11    3.14
+argcount                short   short   short   long    long    long    long    long
+posonlyargc                                                     long    long    long
+kwonlyargc                                              long    long    long    long
 nlocals                 short   short   short   long    long    long
-stacksize                       short   short   long    long    long    long
-flags                   short   short   short   long    long    long    long
-code            Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
-consts          Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
-names           Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
+stacksize                       short   short   long    long    long    long    long
+flags                   short   short   short   long    long    long    long    long
+code            Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
+consts          Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
+names           Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
 varnames                Obj     Obj     Obj     Obj     Obj     Obj
 freevars                                Obj     Obj     Obj     Obj
 cellvars                                Obj     Obj     Obj     Obj
-locals+names                                                            Obj
-locals+kinds                                                            Obj
-filename        Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
-name            Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
-qualname                                                                Obj
-firstline                       short   short   long    long    long    long
-lntable                         Obj     Obj     Obj     Obj     Obj     Obj
-exceptiontable                                                          Obj
+locals+names                                                            Obj     Obj
+locals+kinds                                                            Obj     Obj
+filename        Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
+name            Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj     Obj
+qualname                                                                Obj     Obj
+firstline                       short   short   long    long    long    long    long
+lntable                         Obj     Obj     Obj     Obj     Obj     Obj     Obj
+exceptiontable                                                          Obj     Obj
 */
 
 void PycCode::load(PycData* stream, PycModule* mod)

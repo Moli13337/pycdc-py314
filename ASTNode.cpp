@@ -32,7 +32,7 @@ const char* ASTBinary::op_str() const
         ".", " ** ", " * ", " / ", " // ", " % ", " + ", " - ",
         " << ", " >> ", " & ", " ^ ", " | ", " and ", " or ", " @ ",
         " += ", " -= ", " *= ", " /= ", " %= ", " **= ", " <<= ",
-        " >>= ", " &= ", " ^= ", " |= ", " //= ", " @= ", " <INVALID> "
+        " >>= ", " &= ", " ^= ", " |= ", " //= ", " @= ", "[]", " <INVALID> "
 
     };
     return s_op_strings[op()];
@@ -157,6 +157,8 @@ ASTBinary::BinOp ASTBinary::from_binary_op(int operand)
         return BIN_IP_DIVIDE;
     case 25:
         return BIN_IP_XOR;
+    case 26:
+        return BIN_SUBSCR;
     default:
         return BIN_INVALID; // Return BIN_INVALID for out-of-range operand
     }

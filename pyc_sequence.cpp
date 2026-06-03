@@ -78,3 +78,12 @@ bool PycDict::isEqual(PycRef<PycObject> obj) const
     }
     return true;
 }
+
+
+/* PycSlice */
+void PycSlice::load(PycData* stream, PycModule* mod)
+{
+    m_start = LoadObject(stream, mod);
+    m_stop = LoadObject(stream, mod);
+    m_step = LoadObject(stream, mod);
+}

@@ -97,6 +97,7 @@ int main(int argc, char* argv[])
         decompyle(mod.code(), &mod, *pyc_output);
     } catch (std::exception& ex) {
         fprintf(stderr, "Error decompyling %s: %s\n", infile, ex.what());
+        *pyc_output << "\n# ERROR: " << ex.what() << "\n";
         return 1;
     }
 

@@ -290,3 +290,15 @@ OPCODE_A(INSTRUMENTED_END_SEND)             // Python 3.12 ->           (see END
 OPCODE_A(INSTRUMENTED_INSTRUCTION)          // Python 3.12 ->           A=(unused)
 OPCODE_A(INSTRUMENTED_LINE)                 // Python 3.12 ->           ???
 OPCODE_A(INSTRUMENTED_CALL_KW)              // Python 3.13 ->           (see CALL_KW)
+
+/* Python 3.14+ opcodes */
+OPCODE(BINARY_OP_INPLACE_ADD_UNICODE)       // Python 3.14 ->
+OPCODE(NOT_TAKEN)                           // Python 3.14 ->
+OPCODE(POP_ITER)                            // Python 3.14 ->
+OPCODE_A(BUILD_TEMPLATE)                    // Python 3.14 ->
+OPCODE_A(BUILD_INTERPOLATION)               // Python 3.14 ->
+OPCODE_A(LOAD_FAST_BORROW)                  // Python 3.14 ->
+OPCODE_A(LOAD_FAST_BORROW_LOAD_FAST_BORROW) // Python 3.14 ->
+OPCODE_A(LOAD_SMALL_INT)                    // Python 3.14 ->
+OPCODE_A(LOAD_COMMON_CONSTANT)              // Python 3.14 ->
+OPCODE_A(LOAD_SPECIAL)                      // Python 3.14 ->

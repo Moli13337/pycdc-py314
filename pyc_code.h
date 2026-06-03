@@ -87,6 +87,11 @@ public:
 
     PycRef<PycString> getLocal(int idx) const
     {
+        if (idx < 0 || idx >= m_localNames->size()) {
+            PycRef<PycString> s = new PycString();
+            s->setValue("<local" + std::to_string(idx) + ">");
+            return s;
+        }
         return m_localNames->get(idx).cast<PycString>();
     }
 

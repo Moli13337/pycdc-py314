@@ -1,7 +1,3 @@
-支持python3.14版本的pycdc
-
-原仓库: [pycdc](https://github.com/zrax/pycdc)
-
 # Decompyle++ 
 ***A Python Byte-code Disassembler/Decompiler***
 

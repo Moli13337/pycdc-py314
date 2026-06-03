@@ -213,6 +213,14 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 && opcode != Pyc::JUMP_IF_TRUE_OR_POP_A
                 && opcode != Pyc::POP_JUMP_IF_TRUE_A
                 && opcode != Pyc::POP_JUMP_FORWARD_IF_TRUE_A
+                && opcode != Pyc::POP_JUMP_IF_NONE_A
+                && opcode != Pyc::POP_JUMP_IF_NOT_NONE_A
+                && opcode != Pyc::POP_JUMP_BACKWARD_IF_FALSE_A
+                && opcode != Pyc::POP_JUMP_BACKWARD_IF_TRUE_A
+                && opcode != Pyc::POP_JUMP_BACKWARD_IF_NONE_A
+                && opcode != Pyc::POP_JUMP_BACKWARD_IF_NOT_NONE_A
+                && opcode != Pyc::POP_JUMP_FORWARD_IF_NONE_A
+                && opcode != Pyc::POP_JUMP_FORWARD_IF_NOT_NONE_A
                 && opcode != Pyc::POP_BLOCK) {
             else_pop = false;
 
@@ -537,8 +545,20 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 stack.pop();
                 PycRef<ASTNode> function = stack.top();
                 stack.pop();
+                /* In Python 3.12+, PUSH_NULL may be between LOADBUILDCLASS and function.
+                   Skip it if present. */
+                if (function == nullptr && mod->verCompare(3, 12) >= 0) {
+                    function = stack.top();
+                    stack.pop();
+                }
                 PycRef<ASTNode> loadbuild = stack.top();
                 stack.pop();
+                /* In Python 3.12+, PUSH_NULL may also be between function and LOADBUILDCLASS.
+                   Skip nullptr if present. */
+                if (loadbuild == nullptr && mod->verCompare(3, 12) >= 0) {
+                    loadbuild = stack.top();
+                    stack.pop();
+                }
                 int loadbuild_type = loadbuild.type();
                 if (loadbuild_type == ASTNode::NODE_LOADBUILDCLASS) {
                     PycRef<ASTNode> call = new ASTCall(function, pparamList, kwparamList);
@@ -600,12 +620,53 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 }
                 PycRef<ASTNode> func = stack.top();
                 stack.pop();
-                if ((opcode == Pyc::CALL_A || opcode == Pyc::INSTRUMENTED_CALL_A) &&
-                        stack.top() == nullptr) {
-                    stack.pop();
+                if ((opcode == Pyc::CALL_A || opcode == Pyc::INSTRUMENTED_CALL_A)) {
+                    /* In Python 3.12+, the stack layout for CALL is
+                       [NULL_or_self, callable, arg1, arg2, ...]
+                       NULL_or_self is below callable on the stack.
+                       If func is nullptr (from PUSH_NULL), the real callable
+                       is below it. If func is the callable, check if
+                       NULL_or_self is below it. */
+                    if (func == nullptr) {
+                        /* PUSH_NULL was used; real callable is below */
+                        func = stack.top();
+                        stack.pop();
+                    } else if (stack.top() == nullptr) {
+                        /* LOAD_ATTR method flag pushed nullptr below callable */
+                        stack.pop();
+                    }
                 }
 
                 stack.push(new ASTCall(func, pparamList, kwparamList));
+            }
+            break;
+        case Pyc::CALL_FUNCTION_EX_A:
+            {
+                ASTCall::kwparam_t kwparamList;
+                ASTCall::pparam_t pparamList;
+
+                PycRef<ASTNode> kwargs = nullptr;
+                if (operand & 0x01) {
+                    kwargs = stack.top();
+                    stack.pop();
+                }
+                PycRef<ASTNode> args = stack.top();
+                stack.pop();
+                PycRef<ASTNode> func = stack.top();
+                stack.pop();
+                if (func == nullptr) {
+                    /* PUSH_NULL was used; real callable is below */
+                    func = stack.top();
+                    stack.pop();
+                } else if (stack.top() == nullptr) {
+                    stack.pop();
+                }
+
+                PycRef<ASTNode> call = new ASTCall(func, pparamList, kwparamList);
+                call.cast<ASTCall>()->setVar(args);
+                if (kwargs)
+                    call.cast<ASTCall>()->setKW(kwargs);
+                stack.push(call);
             }
             break;
         case Pyc::CALL_FUNCTION_VAR_A:
@@ -1569,9 +1630,12 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
 
                     if (mod->verCompare(3, 12) >= 0) {
                         if (operand & 1) {
-                            /* Changed in version 3.12:
-                            If the low bit of name is set, then a NULL or self is pushed to the stack
-                            before the attribute or unbound method respectively. */
+                            /* In Python 3.12+, LOAD_ATTR with method flag pushes
+                               a NULL/self marker before the attribute value.
+                               For decompilation, we push nullptr as a marker.
+                               CALL will consume this marker without adding it
+                               to the argument list, since obj.attr already
+                               captures the self reference. */
                             stack.push(nullptr);
                         }
                         operand >>= 1;
@@ -1653,6 +1717,12 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 PycRef<ASTNode> fun_code = stack.top();
                 stack.pop();
 
+                /* Skip nullptr from PUSH_NULL if present */
+                if (fun_code == nullptr && mod->verCompare(3, 12) >= 0) {
+                    fun_code = stack.top();
+                    stack.pop();
+                }
+
                 /* Test for the qualified name of the function (at TOS) */
                 int tos_type = fun_code.cast<ASTObject>()->object().type();
                 if (tos_type != PycObject::TYPE_CODE &&
@@ -1672,6 +1742,28 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                     kwDefArgs.push_front(stack.top());
                     stack.pop();
                 }
+                stack.push(new ASTFunction(fun_code, defArgs, kwDefArgs));
+            }
+            break;
+        case Pyc::MAKE_FUNCTION:
+            {
+                PycRef<ASTNode> fun_code = stack.top();
+                stack.pop();
+
+                /* Skip nullptr from PUSH_NULL if present */
+                if (fun_code == nullptr && mod->verCompare(3, 12) >= 0) {
+                    fun_code = stack.top();
+                    stack.pop();
+                }
+
+                int tos_type = fun_code.cast<ASTObject>()->object().type();
+                if (tos_type != PycObject::TYPE_CODE &&
+                    tos_type != PycObject::TYPE_CODE2) {
+                    fun_code = stack.top();
+                    stack.pop();
+                }
+
+                ASTFunction::defarg_t defArgs, kwDefArgs;
                 stack.push(new ASTFunction(fun_code, defArgs, kwDefArgs));
             }
             break;
@@ -1794,8 +1886,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
             {
                 stack.pop();
 
-                if ((opcode == Pyc::END_FOR) && (mod->majorVer() == 3) && (mod->minorVer() == 12)) {
-                    // one additional pop for python 3.12
+                if (mod->verCompare(3, 12) >= 0 && mod->verCompare(3, 14) < 0) {
                     stack.pop();
                 }
 
@@ -2692,6 +2783,488 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 stack.push(value);
             }
             break;
+
+        /* Python 3.11+ opcodes */
+        case Pyc::RETURN_GENERATOR:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                curblock->append(new ASTReturn(value));
+            }
+            break;
+        case Pyc::INTERPRETER_EXIT:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                curblock->append(new ASTReturn(value));
+            }
+            break;
+        case Pyc::END_SEND:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                stack.push(value);
+            }
+            break;
+        case Pyc::RESERVED:
+        case Pyc::EXIT_INIT_CHECK:
+            break;
+        case Pyc::CLEANUP_THROW:
+            {
+                stack.pop();
+                stack.pop();
+                stack.pop();
+            }
+            break;
+        case Pyc::CHECK_EG_MATCH:
+            {
+                PycRef<ASTNode> exc = stack.top();
+                stack.pop();
+                stack.push(exc);
+            }
+            break;
+        case Pyc::BEFORE_ASYNC_WITH:
+            {
+                PycRef<ASTNode> mgr = stack.top();
+                stack.pop();
+                stack.push(mgr);
+                stack.push(nullptr);
+            }
+            break;
+        case Pyc::COPY_FREE_VARS_A:
+        case Pyc::MAKE_CELL_A:
+            break;
+        case Pyc::LOAD_FAST_CHECK_A:
+            if (mod->verCompare(1, 3) < 0)
+                stack.push(new ASTName(code->getName(operand)));
+            else
+                stack.push(new ASTName(code->getLocal(operand)));
+            break;
+        case Pyc::LOAD_FAST_AND_CLEAR_A:
+            {
+                PycRef<ASTNode> name;
+                if (mod->verCompare(1, 3) < 0)
+                    name = new ASTName(code->getName(operand));
+                else
+                    name = new ASTName(code->getLocal(operand));
+                stack.push(name);
+            }
+            break;
+        case Pyc::LOAD_FROM_DICT_OR_GLOBALS_A:
+            {
+                stack.pop();
+                if (mod->verCompare(3, 11) >= 0) {
+                    if (operand & 1) {
+                        stack.push(nullptr);
+                    }
+                    operand >>= 1;
+                }
+                stack.push(new ASTName(code->getName(operand)));
+            }
+            break;
+        case Pyc::LOAD_FROM_DICT_OR_DEREF_A:
+            {
+                stack.pop();
+                stack.push(new ASTName(code->getCellVar(mod, operand)));
+            }
+            break;
+        case Pyc::LOAD_SUPER_ATTR_A:
+            {
+                PycRef<ASTNode> super = stack.top();
+                stack.pop();
+                if (stack.top() == nullptr)
+                    stack.pop();
+                PycRef<ASTNode> self = stack.top();
+                stack.pop();
+                PycRef<PycString> attr = code->getName(operand >> 2);
+                stack.push(new ASTSubscr(super, new ASTName(attr)));
+            }
+            break;
+        case Pyc::SEND_A:
+        case Pyc::INSTRUMENTED_END_SEND_A:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                PycRef<ASTNode> dest = stack.top();
+                stack.pop();
+                stack.push(value);
+            }
+            break;
+        case Pyc::POP_JUMP_IF_NONE_A:
+        case Pyc::POP_JUMP_IF_NOT_NONE_A:
+        case Pyc::POP_JUMP_BACKWARD_IF_FALSE_A:
+        case Pyc::POP_JUMP_BACKWARD_IF_TRUE_A:
+        case Pyc::POP_JUMP_BACKWARD_IF_NONE_A:
+        case Pyc::POP_JUMP_BACKWARD_IF_NOT_NONE_A:
+        case Pyc::POP_JUMP_FORWARD_IF_NONE_A:
+        case Pyc::POP_JUMP_FORWARD_IF_NOT_NONE_A:
+            {
+                PycRef<ASTNode> cond = stack.top();
+                stack.pop();
+
+                /* Store the current stack for the else statement(s) */
+                stack_hist.push(stack);
+
+                bool is_none = (opcode == Pyc::POP_JUMP_IF_NONE_A
+                        || opcode == Pyc::POP_JUMP_BACKWARD_IF_NONE_A
+                        || opcode == Pyc::POP_JUMP_FORWARD_IF_NONE_A);
+                bool neg = (opcode == Pyc::POP_JUMP_IF_NOT_NONE_A
+                        || opcode == Pyc::POP_JUMP_BACKWARD_IF_NOT_NONE_A
+                        || opcode == Pyc::POP_JUMP_FORWARD_IF_NOT_NONE_A
+                        || opcode == Pyc::POP_JUMP_BACKWARD_IF_TRUE_A
+                        || opcode == Pyc::POP_JUMP_IF_TRUE_A);
+
+                int offs = operand;
+                if (mod->verCompare(3, 10) >= 0)
+                    offs *= sizeof(uint16_t);
+
+                PycRef<ASTCondBlock> ifblk = new ASTCondBlock(ASTBlock::BLK_IF, pos + offs, cond, neg);
+                ifblk->init();
+                blocks.push(ifblk.cast<ASTBlock>());
+                curblock = blocks.top();
+            }
+            break;
+        case Pyc::YIELD_VALUE_A:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                curblock->append(new ASTReturn(value, ASTReturn::YIELD));
+            }
+            break;
+        case Pyc::END_ASYNC_FOR:
+            {
+                stack.pop();
+                stack.pop();
+                if (curblock->blktype() == ASTBlock::BLK_FOR) {
+                    PycRef<ASTBlock> prev = blocks.top();
+                    blocks.pop();
+                    curblock = blocks.top();
+                    curblock->append(prev.cast<ASTNode>());
+                }
+            }
+            break;
+        case Pyc::GET_LEN:
+            stack.push(nullptr);
+            break;
+        case Pyc::MATCH_MAPPING:
+        case Pyc::MATCH_SEQUENCE:
+            stack.push(nullptr);
+            break;
+        case Pyc::MATCH_KEYS:
+            {
+                stack.pop();
+                stack.push(nullptr);
+                stack.push(nullptr);
+            }
+            break;
+        case Pyc::MATCH_CLASS_A:
+            {
+                for (int i = 0; i < operand + 2; i++)
+                    stack.pop();
+                stack.push(nullptr);
+            }
+            break;
+        case Pyc::TO_BOOL:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                stack.push(value);
+            }
+            break;
+        case Pyc::DELETE_DEREF_A:
+            curblock->append(new ASTDelete(new ASTName(code->getCellVar(mod, operand))));
+            break;
+        case Pyc::DICT_MERGE_A:
+            {
+                PycRef<ASTNode> val = stack.top();
+                stack.pop();
+                PycRef<ASTNode> dict = stack.top();
+                stack.pop();
+                stack.push(new ASTBinary(dict, val, ASTBinary::BIN_IP_ADD, ASTNode::NODE_BINARY));
+            }
+            break;
+        case Pyc::DICT_UPDATE_A:
+            {
+                PycRef<ASTNode> val = stack.top();
+                stack.pop();
+                PycRef<ASTNode> dict = stack.top();
+                stack.pop();
+                stack.push(new ASTBinary(dict, val, ASTBinary::BIN_IP_ADD, ASTNode::NODE_BINARY));
+            }
+            break;
+        case Pyc::UNPACK_EX_A:
+            {
+                int before = operand & 0xFF;
+                int after = operand >> 8;
+                PycRef<ASTNode> seq = stack.top();
+                stack.pop();
+                ASTTuple::value_t vals;
+                for (int i = 0; i < before + after + 1; i++)
+                    vals.push_back(nullptr);
+                stack.push(new ASTTuple(vals));
+                unpack = before + after + 1;
+            }
+            break;
+        case Pyc::MAP_ADD_A:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                stack.pop();
+                stack.push(value);
+            }
+            break;
+        case Pyc::SET_ADD_A:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                stack.push(value);
+            }
+            break;
+        case Pyc::CALL_INTRINSIC_1_A:
+            {
+                PycRef<ASTNode> arg = stack.top();
+                stack.pop();
+                stack.push(arg);
+            }
+            break;
+        case Pyc::CALL_INTRINSIC_2_A:
+            {
+                PycRef<ASTNode> arg2 = stack.top();
+                stack.pop();
+                PycRef<ASTNode> arg1 = stack.top();
+                stack.pop();
+                stack.push(arg1);
+            }
+            break;
+        case Pyc::CALL_KW_A:
+        case Pyc::INSTRUMENTED_CALL_KW_A:
+            {
+                int pparams = operand;
+                ASTCall::kwparam_t kwparamList;
+                ASTCall::pparam_t pparamList;
+
+                PycRef<ASTNode> kw_names_obj = stack.top();
+                if (kw_names_obj.type() == ASTNode::NODE_KW_NAMES_MAP) {
+                    stack.pop();
+                    PycRef<ASTKwNamesMap> kwparams_map = kw_names_obj.cast<ASTKwNamesMap>();
+                    for (ASTKwNamesMap::map_t::const_iterator it = kwparams_map->values().begin(); it != kwparams_map->values().end(); it++) {
+                        kwparamList.push_front(std::make_pair(it->first, it->second));
+                        pparams -= 1;
+                    }
+                }
+
+                for (int i = 0; i < pparams; i++) {
+                    PycRef<ASTNode> param = stack.top();
+                    stack.pop();
+                    pparamList.push_front(param);
+                }
+                PycRef<ASTNode> func = stack.top();
+                stack.pop();
+                if (func == nullptr) {
+                    /* PUSH_NULL was used; real callable is below */
+                    func = stack.top();
+                    stack.pop();
+                } else if (stack.top() == nullptr) {
+                    stack.pop();
+                }
+
+                stack.push(new ASTCall(func, pparamList, kwparamList));
+            }
+            break;
+        case Pyc::CONVERT_VALUE_A:
+            {
+                auto conversion_flag = static_cast<ASTFormattedValue::ConversionFlag>(operand);
+                PycRef<ASTNode> format_spec = nullptr;
+                if (conversion_flag & ASTFormattedValue::HAVE_FMT_SPEC) {
+                    format_spec = stack.top();
+                    stack.pop();
+                }
+                auto val = stack.top();
+                stack.pop();
+                stack.push(new ASTFormattedValue(val, conversion_flag, format_spec));
+            }
+            break;
+        case Pyc::SET_FUNCTION_ATTRIBUTE_A:
+            {
+                PycRef<ASTNode> attr = stack.top();
+                stack.pop();
+                PycRef<ASTNode> func = stack.top();
+                stack.pop();
+                stack.push(func);
+            }
+            break;
+        case Pyc::STORE_FAST_LOAD_FAST_A:
+            {
+                PycRef<ASTNode> src = stack.top();
+                stack.pop();
+                PycRef<ASTNode> name1, name2;
+                if (mod->verCompare(1, 3) < 0) {
+                    name1 = new ASTName(code->getName(operand >> 4));
+                    name2 = new ASTName(code->getName(operand & 0xF));
+                } else {
+                    name1 = new ASTName(code->getLocal(operand >> 4));
+                    name2 = new ASTName(code->getLocal(operand & 0xF));
+                }
+                curblock->append(new ASTStore(src, name1));
+                stack.push(name2);
+            }
+            break;
+        case Pyc::STORE_FAST_STORE_FAST_A:
+            {
+                PycRef<ASTNode> src = stack.top();
+                stack.pop();
+                PycRef<ASTNode> name1, name2;
+                if (mod->verCompare(1, 3) < 0) {
+                    name1 = new ASTName(code->getName(operand >> 4));
+                    name2 = new ASTName(code->getName(operand & 0xF));
+                } else {
+                    name1 = new ASTName(code->getLocal(operand >> 4));
+                    name2 = new ASTName(code->getLocal(operand & 0xF));
+                }
+                curblock->append(new ASTStore(src, name1));
+                curblock->append(new ASTStore(src, name2));
+            }
+            break;
+        case Pyc::ENTER_EXECUTOR_A:
+            break;
+        case Pyc::GET_AWAITABLE_A:
+            {
+                PycRef<ASTNode> object = stack.top();
+                stack.pop();
+                stack.push(new ASTAwaitable(object));
+            }
+            break;
+        case Pyc::EXTENDED_ARG_A:
+            break;
+
+        /* Python 3.13+ opcodes */
+        case Pyc::FORMAT_SIMPLE:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                stack.push(new ASTFormattedValue(value, ASTFormattedValue::NONE, nullptr));
+            }
+            break;
+        case Pyc::FORMAT_WITH_SPEC:
+            {
+                PycRef<ASTNode> format_spec = stack.top();
+                stack.pop();
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                stack.push(new ASTFormattedValue(value, ASTFormattedValue::NONE, format_spec));
+            }
+            break;
+
+        /* Python 3.14+ opcodes */
+        case Pyc::LOAD_FAST_BORROW_A:
+            if (mod->verCompare(1, 3) < 0)
+                stack.push(new ASTName(code->getName(operand)));
+            else
+                stack.push(new ASTName(code->getLocal(operand)));
+            break;
+        case Pyc::LOAD_FAST_BORROW_LOAD_FAST_BORROW_A:
+            stack.push(new ASTName(code->getLocal(operand >> 4)));
+            stack.push(new ASTName(code->getLocal(operand & 0xF)));
+            break;
+        case Pyc::LOAD_SMALL_INT_A:
+            {
+                PycRef<PycObject> intObj = new PycInt(operand);
+                stack.push(new ASTObject(intObj));
+            }
+            break;
+        case Pyc::LOAD_COMMON_CONSTANT_A:
+            {
+                switch (operand) {
+                case 0:
+                    stack.push(nullptr);
+                    break;
+                case 1:
+                    stack.push(new ASTObject(Pyc_True));
+                    break;
+                case 2:
+                    stack.push(new ASTObject(Pyc_False));
+                    break;
+                default:
+                    {
+                        PycRef<PycObject> intObj = new PycInt(operand - 3);
+                        stack.push(new ASTObject(intObj));
+                    }
+                    break;
+                }
+            }
+            break;
+        case Pyc::LOAD_SPECIAL_A:
+            {
+                PycRef<ASTNode> owner = stack.top();
+                stack.pop();
+                PycRef<PycString> attr_name = code->getName(operand);
+                stack.push(new ASTSubscr(owner, new ASTName(attr_name)));
+            }
+            break;
+        case Pyc::BUILD_TEMPLATE_A:
+            {
+                ASTList::value_t values;
+                for (int i = 0; i < operand; i++) {
+                    values.push_front(stack.top());
+                    stack.pop();
+                }
+                stack.push(new ASTList(values));
+            }
+            break;
+        case Pyc::BUILD_INTERPOLATION_A:
+            {
+                PycRef<ASTNode> format_spec = stack.top();
+                stack.pop();
+                PycRef<ASTNode> conversion = stack.top();
+                stack.pop();
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                stack.push(new ASTFormattedValue(value, ASTFormattedValue::NONE, format_spec));
+            }
+            break;
+        case Pyc::BINARY_OP_INPLACE_ADD_UNICODE:
+            {
+                PycRef<ASTNode> right = stack.top();
+                stack.pop();
+                PycRef<ASTNode> left = stack.top();
+                stack.pop();
+                stack.push(new ASTBinary(left, right, ASTBinary::BIN_IP_ADD, ASTNode::NODE_BINARY));
+            }
+            break;
+        case Pyc::NOT_TAKEN:
+            break;
+        case Pyc::POP_ITER:
+            {
+                PycRef<ASTNode> value = stack.top();
+                stack.pop();
+                if (!curblock->inited()) {
+                    curblock->init();
+                    break;
+                }
+                curblock->append(value);
+            }
+            break;
+        case Pyc::INSTRUMENTED_END_FOR_A:
+            {
+                stack.pop();
+                stack.pop();
+                if (curblock->blktype() == ASTBlock::BLK_FOR) {
+                    PycRef<ASTBlock> prev = blocks.top();
+                    blocks.pop();
+                    curblock = blocks.top();
+                    curblock->append(prev.cast<ASTNode>());
+                }
+            }
+            break;
+        case Pyc::INSTRUMENTED_INSTRUCTION_A:
+        case Pyc::INSTRUMENTED_JUMP_BACKWARD_A:
+        case Pyc::INSTRUMENTED_LOAD_SUPER_ATTR_A:
+        case Pyc::INSTRUMENTED_POP_JUMP_IF_NONE_A:
+        case Pyc::INSTRUMENTED_POP_JUMP_IF_NOT_NONE_A:
+        case Pyc::INSTRUMENTED_CALL_FUNCTION_EX_A:
+        case Pyc::INSTRUMENTED_LINE_A:
+            break;
+
         default:
             fprintf(stderr, "Unsupported opcode: %s (%d)\n", Pyc::OpcodeName(opcode), opcode);
             cleanBuild = false;
@@ -2909,9 +3482,16 @@ void print_src(PycRef<ASTNode> node, PycModule* mod, std::ostream& pyc_output)
     case ASTNode::NODE_COMPARE:
         {
             PycRef<ASTBinary> bin = node.cast<ASTBinary>();
-            print_ordered(node, bin->left(), mod, pyc_output);
-            pyc_output << bin->op_str();
-            print_ordered(node, bin->right(), mod, pyc_output);
+            if (bin->op() == ASTBinary::BIN_SUBSCR) {
+                print_ordered(node, bin->left(), mod, pyc_output);
+                pyc_output << "[";
+                print_src(bin->right(), mod, pyc_output);
+                pyc_output << "]";
+            } else {
+                print_ordered(node, bin->left(), mod, pyc_output);
+                pyc_output << bin->op_str();
+                print_ordered(node, bin->right(), mod, pyc_output);
+            }
         }
         break;
     case ASTNode::NODE_UNARY:
@@ -3004,7 +3584,11 @@ void print_src(PycRef<ASTNode> node, PycModule* mod, std::ostream& pyc_output)
                 print_const(pyc_output, val.cast<ASTObject>()->object(), mod, F_STRING_QUOTE);
                 break;
             default:
-                fprintf(stderr, "Unsupported node type %d in NODE_JOINEDSTR\n", val.type());
+                // For complex expressions in f-strings (Python 3.14+)
+                pyc_output << "{";
+                print_src(val, mod, pyc_output);
+                pyc_output << "}";
+                break;
             }
         }
         pyc_output << F_STRING_QUOTE;
@@ -3524,26 +4108,17 @@ void print_src(PycRef<ASTNode> node, PycModule* mod, std::ostream& pyc_output)
     case ASTNode::NODE_ANNOTATED_VAR:
         {
             PycRef<ASTAnnotatedVar> annotated_var = node.cast<ASTAnnotatedVar>();
-            PycRef<ASTObject> name = annotated_var->name().cast<ASTObject>();
+            PycRef<ASTNode> name = annotated_var->name();
             PycRef<ASTNode> annotation = annotated_var->annotation();
 
-            pyc_output << name->object().cast<PycString>()->value();
+            print_src(name, mod, pyc_output);
             pyc_output << ": ";
             print_src(annotation, mod, pyc_output);
         }
         break;
     case ASTNode::NODE_TERNARY:
         {
-            /* parenthesis might be needed
-             * 
-             * when if-expr is part of numerical expression, ternary has the LOWEST precedence
-             *     print(a + b if False else c)
-             * output is c, not a+c (a+b is calculated first)
-             * 
-             * but, let's not add parenthesis - to keep the source as close to original as possible in most cases
-             */
             PycRef<ASTTernary> ternary = node.cast<ASTTernary>();
-            //pyc_output << "(";
             print_src(ternary->if_expr(), mod, pyc_output);
             const auto if_block = ternary->if_block().cast<ASTCondBlock>();
             pyc_output << " if ";
@@ -3552,7 +4127,23 @@ void print_src(PycRef<ASTNode> node, PycModule* mod, std::ostream& pyc_output)
             print_src(if_block->cond(), mod, pyc_output);
             pyc_output << " else ";
             print_src(ternary->else_expr(), mod, pyc_output);
-            //pyc_output << ")";
+        }
+        break;
+    case ASTNode::NODE_LOCALS:
+        pyc_output << "locals()";
+        break;
+    case ASTNode::NODE_CLASS:
+        {
+            PycRef<ASTClass> cls = node.cast<ASTClass>();
+            pyc_output << "class ";
+            print_src(cls->name(), mod, pyc_output);
+            if (cls->bases() != nullptr) {
+                pyc_output << "(";
+                print_src(cls->bases(), mod, pyc_output);
+                pyc_output << ")";
+            }
+            pyc_output << ":\n";
+            print_src(cls->code(), mod, pyc_output);
         }
         break;
     default:
@@ -3678,7 +4269,12 @@ void decompyle(PycRef<PycCode> code, PycModule* mod, std::ostream& pyc_output)
         printDocstringAndGlobals = false;
     }
 
-    print_src(source, mod, pyc_output);
+    try {
+        print_src(source, mod, pyc_output);
+    } catch (std::bad_cast&) {
+        pyc_output << "\n# bad_cast in print_src\n";
+        cleanBuild = false;
+    }
 
     if (!cleanBuild || !part1clean) {
         start_line(cur_indent, pyc_output);
